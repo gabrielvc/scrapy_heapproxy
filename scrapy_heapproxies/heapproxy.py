@@ -21,9 +21,16 @@ class HeapProxy(object):
         self.timeout = float(settings.get('PROXY_TIMEOUT'))
         self.chosen_proxy = ''
         self.logger = logging.getLogger('scrapy.heapproxies')
-
+        self.restart_limit = int(settings.get("PROXY_RESTART_LIMIT"))
+      
         if self.proxy_list is None:
             raise KeyError('PROXY_LIST setting is missing')
+        self.proxies = {}
+
+        self.read_from_list()
+
+
+    def read_from_list(self):
         self.proxies = {}
         self.logger.debug('Reading file {}'.format(self.proxy_list))
         fin = open(self.proxy_list)
@@ -54,7 +61,6 @@ class HeapProxy(object):
 
         self.logger.debug("Repushing proxy to end of queue")
         heapq.heappush(self.proxies, (datetime.datetime.now(), first[1], first[2]))
-        
         
     @classmethod
     def from_crawler(cls, crawler):
@@ -116,3 +122,6 @@ class HeapProxy(object):
         request.meta["exception"] = True
         self.logger.info('Removing failed proxy <%s>, %d proxies left' % (
             proxy, len(self.proxies)))
+        if len(self.proxies) < self.restart_limit:
+            self.logger.info("Restarting proxylist")
+            self.read_from_list()
