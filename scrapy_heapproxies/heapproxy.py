@@ -6,6 +6,10 @@ import time
 import datetime
 import heapq
 import pdb
+from scrapy import signals
+from scrapy.exceptions import DontCloseSpider, IgnoreRequest
+from twisted.internet import reactor
+from weakref import WeakKeyDictionary
 
 
 class Mode:
@@ -13,6 +17,7 @@ class Mode:
 
 
 class HeapProxy(object):
+    requests = WeakKeyDictionary()
     
     def __init__(self, settings):
         super(HeapProxy, self).__init__()
@@ -52,7 +57,7 @@ class HeapProxy(object):
         self.logger.debug("Proxies being used {}".format(self.proxies))
         now = datetime.datetime.now()
         self.logger.debug("Building heap")
-        self.proxies = [(now - datetime.timedelta(seconds = self.timeout), i, self.proxies[i]) for i in self.proxies]
+        self.proxies = [(now - datetime.timedelta(seconds = self.timeout + 10), i, self.proxies[i]) for i in self.proxies]
         heapq.heapify(self.proxies)
 
         self.logger.debug("Picking first proxy")
@@ -64,7 +69,35 @@ class HeapProxy(object):
         
     @classmethod
     def from_crawler(cls, crawler):
-        return cls(crawler.settings)
+        ext = cls(crawler.settings)
+        crawler.signals.connect(ext.spider_idle, signal=signals.spider_idle)
+        return ext
+
+    @classmethod
+    def spider_idle(cls, spider):
+        if cls.requests.get(spider):
+            spider.log("delayed requests pending, not closing spider")
+            raise DontCloseSpider()
+
+
+    def add_proxy(self, first, request):
+        self.chosen_proxy = first
+
+        self.logger.debug('Pushing back to heap')
+        heapq.heappush(self.proxies, (datetime.datetime.now(), first[1], first[2]))
+
+        proxy_address = self.chosen_proxy[1]
+
+        proxy_user_pass = self.chosen_proxy[2]
+
+        if proxy_user_pass:
+            request.meta['proxy'] = proxy_address
+            basic_auth = 'Basic ' + base64.b64encode(proxy_user_pass.encode()).decode()
+            request.headers['Proxy-Authorization'] = basic_auth
+        else:
+            self.logger.debug('Proxy user pass not found, adding proxy without password')
+            request.meta['proxy'] = proxy_address
+        return request
 
     def process_request(self, request, spider):
         # Don't overwrite with a random one (server-side state for IP)
@@ -82,30 +115,28 @@ class HeapProxy(object):
 
         if diff < self.timeout:
             self.logger.info("Timeout reached, waiting {} seconds".format(self.timeout - diff))
-            time.sleep(self.timeout - diff)
+            self.requests.setdefault(spider, 0)
+            self.requests[spider] += 1
+            request = self.add_proxy(first, request)
+            reactor.callLater(self.timeout - diff, self.schedule_request, request.copy(),
+                              spider)
+            raise IgnoreRequest()
             
-        self.chosen_proxy = first
-
-        self.logger.debug('Pushing back to heap')
-        heapq.heappush(self.proxies, (datetime.datetime.now(), first[1], first[2]))
-
-        proxy_address = self.chosen_proxy[1]
-
-        proxy_user_pass = self.chosen_proxy[2]
-
-        if proxy_user_pass:
-            request.meta['proxy'] = proxy_address
-            basic_auth = 'Basic ' + base64.b64encode(proxy_user_pass.encode()).decode()
-            request.headers['Proxy-Authorization'] = basic_auth
-        else:
-            self.logger.debug('Proxy user pass not found, adding proxy without password')
-            request.meta['proxy'] = proxy_address
-            
+        request = self.add_proxy(first, request)
+        
         self.logger.debug('Using proxy <%s>, %d proxies left' % (
-                proxy_address, len(self.proxies)))
+                self.chosen_proxy[1], len(self.proxies)))
+
+
+    def schedule_request(self, request, spider):
+        spider.crawler.engine.schedule(request, spider)
+        self.requests[spider] -= 1
 
         
     def process_exception(self, request, exception, spider):
+        if isinstance(exception, IgnoreRequest) or isinstance(exception, DontCloseSpider):
+            return None
+        
         if 'proxy' not in request.meta:
             return
         proxy = request.meta['proxy']
