@@ -155,7 +155,7 @@ class HeapProxy(object):
         proxy = request.meta['proxy']
         try:
             for i in self.proxies:
-                if i[1] == self.chosen_proxy[1]:
+                if i[1] == proxy:
                     self.logger.debug(
                         "Proxy {} not responding, taking off".format(i[1]))
                     self.proxies.remove(i)
