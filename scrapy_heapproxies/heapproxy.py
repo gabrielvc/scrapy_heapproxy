@@ -2,11 +2,15 @@ import re
 import base64
 import logging
 import datetime
+import time
 import heapq
+import pdb
 from scrapy import signals
 from scrapy.exceptions import DontCloseSpider, IgnoreRequest
 from twisted.internet import reactor
+from twisted.internet.error import TCPTimedOutError, TimeoutError
 from weakref import WeakKeyDictionary
+from .exceptions import BadProxy, EmptyHeap
 
 
 class Mode:
@@ -25,15 +29,13 @@ class HeapProxy(object):
         self.timeout = float(settings.get('PROXY_TIMEOUT'))
         self.restart_limit = int(settings.get("PROXY_RESTART_LIMIT"))
 
-        self.chosen_proxy = ''
         self.logger = logging.getLogger('scrapy.heapproxies')
+        self.working_proxies = {}
         self.proxies = {}
 
-        self.read_from_list()
+        self.build_from_list()
 
-    def read_from_list(self):
-        self.proxies = {}
-
+    def build_from_list(self):
         self.logger.debug('Reading file {}'.format(self.proxy_list))
         fin = open(self.proxy_list)
         try:
@@ -47,7 +49,8 @@ class HeapProxy(object):
                 else:
                     user_pass = ''
 
-                self.proxies[parts.group(1) + parts.group(3)] = user_pass
+                self.working_proxies[parts.group(
+                    1) + parts.group(3)] = (user_pass, datetime.datetime.now())
         finally:
             fin.close()
 
@@ -56,16 +59,8 @@ class HeapProxy(object):
         self.logger.debug("Building heap")
         self.proxies = [(now - datetime.timedelta(seconds=self.timeout + 10),
                          i,
-                         self.proxies[i]) for i in self.proxies]
+                         self.working_proxies[i][0]) for i in self.working_proxies.keys()]
         heapq.heapify(self.proxies)
-
-        self.logger.debug("Picking first proxy")
-        first = heapq.heappop(self.proxies)
-        self.chosen_proxy = first
-
-        self.logger.debug("Repushing proxy to end of queue")
-        heapq.heappush(
-            self.proxies, (datetime.datetime.now(), first[1], first[2]))
 
     @classmethod
     def from_crawler(cls, crawler):
@@ -79,17 +74,10 @@ class HeapProxy(object):
             spider.log("delayed requests pending, not closing spider")
             raise DontCloseSpider()
 
-    def add_proxy(self, first, request):
-        self.chosen_proxy = first
-
+    def add_proxy(self, proxy, request):
         self.logger.debug('Pushing back to heap')
-
-        heapq.heappush(self.proxies,
-                       (datetime.datetime.now(),
-                        first[1],
-                        first[2]))
-        proxy_address = self.chosen_proxy[1]
-        proxy_user_pass = self.chosen_proxy[2]
+        proxy_address = proxy[1]
+        proxy_user_pass = proxy[2]
 
         if proxy_user_pass:
             request.meta['proxy'] = proxy_address
@@ -102,45 +90,96 @@ class HeapProxy(object):
             request.meta['proxy'] = proxy_address
         return request
 
-    def process_request(self, request, spider):
-        if 'proxy' in request.meta:
-            if request.meta["exception"] is False:
-                return
-        request.meta["exception"] = False
-        if len(self.proxies) == 0:
-            raise ValueError('All proxies are unusable, cannot proceed')
-
-        self.logger.debug('Picking proxies')
-        first = heapq.heappop(self.proxies)
+    def push_to_heap(self, proxy):
+        if proxy[1] not in self.working_proxies.keys():
+            return None
         now = datetime.datetime.now()
-        diff = (now - first[0]).total_seconds()
+        self.working_proxies[proxy[1]] = (proxy[2], now)
+        try:
+            heapq.heappush(self.proxies,
+                           (now,
+                            proxy[1],
+                            proxy[2]))
+        except:
+            pdb.set_trace()
 
-        if diff < self.timeout:
+    def process_request(self, request, spider):
+        if 'proxy' not in request.meta:
+            # Brand New Request
+            if len(self.proxies) == 0:
+                # No proxy in queue
+                last_time = min([i[1] for i in self.working_proxies.values()])
+
+                dt = self.timeout - (datetime.datetime.now() -
+                                     last_time).total_seconds()
+                dt = max([dt, 0.001])
+                # Somebody is gonna be pushed into queue, must liberate thread
+                request.dont_filter = True
+                reactor.callLater(dt,
+                                  self.schedule_request,
+                                  request.copy(),
+                                  spider)
+                raise IgnoreRequest()
+
+            self.logger.debug('Picking proxies')
+            proxy = heapq.heappop(self.proxies)
+            now = datetime.datetime.now()
+            diff = (now - proxy[0]).total_seconds()
+
+            if diff < self.timeout:
+                # Time out reached for all proxies, calling later
+                self.logger.debug(
+                    "Timeout reached, waiting {} seconds".
+                    format(self.timeout - diff))
+                self.requests.setdefault(spider, 0)
+                self.requests[spider] += 1
+                request = self.add_proxy(proxy, request)
+                request.dont_filter = True
+                reactor.callLater(self.timeout - diff,
+                                  self.schedule_request,
+                                  request.copy(),
+                                  spider,
+                                  proxy)
+                raise IgnoreRequest()
+
+            request = self.add_proxy(proxy, request)
+            self.push_to_heap(proxy)
+
+            self.logger.debug('Using proxy <%s>, %d proxies left' % (
+                proxy[1], len(self.proxies)))
+
+        elif 'bad_proxy' in request.meta:
+            # User sent mesage (spider)
+            self.logger.debug('Bad proxy detected')
+            raise BadProxy
+
+        elif request.meta.get('proxy') not in self.working_proxies.keys():
+            # Request was scheduled with proxy but proxy was since signaled bad_proxy
+            raise BadProxy
+
+        else:
+            if 'delayed_request' in request.meta:
+                # Delayed request, must just repush to queue
+                self.logger.debug('Dealing with delayed request')
+                request.meta.pop('delayed_request')
+                proxy = request.meta.pop('proxy_object')
+                self.push_to_heap(proxy)
+
             self.logger.debug(
-                "Timeout reached, waiting {} seconds".
-                format(self.timeout - diff))
-            self.requests.setdefault(spider, 0)
-            self.requests[spider] += 1
-            request = self.add_proxy(first, request)
-            request.dont_filter = True
-            reactor.callLater(self.timeout - diff,
-                              self.schedule_request,
-                              request.copy(),
-                              spider)
-            raise IgnoreRequest()
+                'Request has already the needed proxy, nothing to do')
+            return
 
-        request = self.add_proxy(first, request)
-
-        self.logger.debug('Using proxy <%s>, %d proxies left' % (
-            self.chosen_proxy[1], len(self.proxies)))
-
-    def schedule_request(self, request, spider):
+    def schedule_request(self, request, spider, proxy=None):
         spider.logger.debug('Currently there are {0} scheduled requests and {1} inprogress requests'.
                             format(len(spider.crawler.engine.slot.scheduler),
                                    len(spider.crawler.engine.slot.inprogress)))
         spider.logger.debug('Trying to ad request {0} to spider {1}'.
                             format(request, spider))
+        if proxy is not None:
+            request.meta['delayed_request'] = True
+            request.meta['proxy_object'] = proxy
         spider.crawler.engine.schedule(request, spider)
+
         spider.logger.debug('Currently there are {0} scheduled requests and {1} inprogress requests'.
                             format(len(spider.crawler.engine.slot.scheduler),
                                    len(spider.crawler.engine.slot.inprogress)))
@@ -150,23 +189,31 @@ class HeapProxy(object):
         if isinstance(exception, IgnoreRequest):
             return None
 
-        if ('proxy' not in request.meta):
-            return
-        proxy = request.meta['proxy']
-        try:
-            for i in self.proxies:
-                if i[1] == proxy:
-                    self.logger.debug(
-                        "Proxy {} not responding, taking off".format(i[1]))
-                    self.proxies.remove(i)
-                    break
+        if any([isinstance(exception, i) for i in [BadProxy,
+                                                   TCPTimedOutError,
+                                                   TimeoutError]]):
+            proxy = request.meta.pop('proxy')
+            request.meta.pop('delayed_request', None)
+            request.meta.pop('proxy_object', None)
+            request.meta.pop('bad_proxy', None)
+            self.working_proxies.pop(proxy, None)
+            try:
+                for i in self.proxies:
+                    if i[1] == proxy:
+                        self.logger.debug(
+                            "Proxy {} not responding, taking off".format(i[1]))
+                        self.proxies.remove(i)
+                        break
 
-            heapq.heapify(self.proxies)
-        except KeyError:
-            pass
-        request.meta["exception"] = True
-        self.logger.info('Removing failed proxy <%s>, %d proxies left' % (
-            proxy, len(self.proxies)))
-        if len(self.proxies) < self.restart_limit:
-            self.logger.info("Restarting proxylist")
-            self.read_from_list()
+                heapq.heapify(self.proxies)
+            except KeyError:
+                pass
+
+            self.logger.info('Removing failed proxy <%s>, %d proxies left' % (
+                proxy, len(self.working_proxies)))
+            if len(self.working_proxies) < self.restart_limit:
+                self.logger.info("Restarting proxylist")
+                self.build_from_list()
+            if 'redirect_urls' in request.meta:
+                request.replace(url=request.meta['redirect_urls'][0])
+            return request
