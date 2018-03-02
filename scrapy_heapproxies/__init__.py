@@ -1,2 +1,2 @@
-from .heapproxy import HeapProxy
-from .exceptions import BadProxy
+from scrapy_heapproxies.heapproxy import HeapProxy
+from scrapy_heapproxies.exceptions import BadProxy
