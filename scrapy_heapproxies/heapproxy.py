@@ -10,7 +10,7 @@ from scrapy.exceptions import DontCloseSpider, IgnoreRequest
 from twisted.internet import reactor
 from twisted.internet.error import TCPTimedOutError, TimeoutError
 from weakref import WeakKeyDictionary
-from .exceptions import BadProxy, EmptyHeap
+from .exceptions import BadProxy
 
 
 class Mode:
