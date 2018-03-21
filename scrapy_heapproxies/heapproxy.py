@@ -8,7 +8,7 @@ import pdb
 from scrapy import signals
 from scrapy.exceptions import DontCloseSpider, IgnoreRequest
 from twisted.internet import reactor
-from twisted.internet.error import TCPTimedOutError, TimeoutError, ConnectionRefusedError
+from twisted.internet.error import TCPTimedOutError, TimeoutError, ConnectionRefusedError, ConnectionDone
 from weakref import WeakKeyDictionary
 from .exceptions import BadProxy
 
@@ -191,6 +191,7 @@ class HeapProxy(object):
 
         if any([isinstance(exception, i) for i in [BadProxy,
                                                    TCPTimedOutError,
+                                                   ConnectionDone,
                                                    TimeoutError,
                                                    ConnectionRefusedError]]):
             proxy = request.meta.pop('proxy')
