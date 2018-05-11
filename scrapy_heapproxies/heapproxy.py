@@ -11,61 +11,98 @@ from twisted.internet import reactor
 from twisted.internet.error import TCPTimedOutError, TimeoutError, ConnectionRefusedError, ConnectionDone
 from weakref import WeakKeyDictionary
 from .exceptions import BadProxy
-
+import requests
+from w3lib.http import basic_auth_header
 
 class Mode:
     PROXY_TIMEOUT = range(1)
 
+class RequestCrawlera():
+    proxies = []
+
+    def __init__(self, api_key, url = "http://httpbin.org/ip"):
+        self.url_init = url
+        self.api_key = api_key
+        self.crawlera_url = "http://proxy.crawlera.com:8010"
+        self.proxies = []
+    def create_session(self, nb):
+        headers = {
+            "Proxy-Authorization" : basic_auth_header(self.api_key, ''),
+            'X-Crawlera-Session' : 'create'
+        }
+        proxies = {"http": self.crawlera_url}
+
+        for i in range(0, nb):
+            res = requests.get(self.url_init, headers=headers, proxies = proxies)
+            self.proxies.append(res.headers.get('X-Crawlera-Session', ''))
+            i += 1
+
+    def add_proxy(self, proxy_id, request):
+        request.meta['proxy'] = self.crawlera_url
+        request.headers['Proxy-Authorization'] = basic_auth_header(self.api_key, '')
+        request.headers["X-Crawlera-Session"] = proxy_id
+        return request
+
+    def delete_and_create(self, proxy_id):
+        self.delete_session(proxy_id)
+        headers = {
+            "Proxy-Authorization" : basic_auth_header(self.api_key, ''),
+            'X-Crawlera-Session' : 'create'
+        }
+        proxies = {"http": self.crawlera_url}
+        res = requests.get(self.url_init, headers=headers, proxies = proxies)
+        proxy_id = res.headers.get('X-Crawlera-Session', '')
+        self.proxies.append(proxy_id)
+        return (proxy_id)
+
+    def delete_session(self, id_proxy):
+        headers = {"Authorization": basic_auth_header(self.api_key, '')}
+        headers["X-Crawlera-Session"] = id_proxy
+        requests.delete("http://proxy.crawlera.com:8010/sessions/" + id_proxy,
+                        headers=headers)
+        for i in self.proxies:
+            if i == id_proxy:
+                self.proxies.remove(i)
+                break
+
+    def delete_all_sessions(self):
+        for i in self.proxies:
+            self.delete_session(i)
 
 class HeapProxy(object):
     requests = WeakKeyDictionary()
 
     def __init__(self, settings):
         super(HeapProxy, self).__init__()
-        self.mode = settings.get('PROXY_MODE')
-        self.proxy_list = settings.get('PROXY_LIST')
-        if self.proxy_list is None:
-            raise KeyError('PROXY_LIST setting is missing')
         self.timeout = float(settings.get('PROXY_TIMEOUT'))
         self.restart_limit = int(settings.get("PROXY_RESTART_LIMIT"))
+        self.api_key = str(settings.get("CRAWLERA_APIKEY"))
 
         self.logger = logging.getLogger('scrapy.heapproxies')
+        self.crawlera_req = RequestCrawlera(self.api_key)
         self.working_proxies = {}
         self.proxies = {}
 
+        self.proxy_list = []
         self.build_from_list()
 
     def build_from_list(self):
-        self.logger.debug('Reading file {}'.format(self.proxy_list))
-        fin = open(self.proxy_list)
-        try:
-            for line in fin.readlines():
-                parts = re.match('(\w+://)([^:]+?:[^@]+?@)?(.+)', line.strip())
-                if not parts:
-                    continue
-
-                if parts.group(2):
-                    user_pass = parts.group(2)[:-1]
-                else:
-                    user_pass = ''
-
-                self.working_proxies[parts.group(
-                    1) + parts.group(3)] = (user_pass, datetime.datetime.now())
-        finally:
-            fin.close()
-
+        self.crawlera_req.create_session(10)        
+        for i in self.crawlera_req.proxies:
+            self.working_proxies[i] = datetime.datetime.now()
         self.logger.debug("Proxies being used {}".format(self.proxies))
         now = datetime.datetime.now()
         self.logger.debug("Building heap")
         self.proxies = [(now - datetime.timedelta(seconds=self.timeout + 10),
                          i,
-                         self.working_proxies[i][0]) for i in self.working_proxies.keys()]
+                         self.working_proxies[i]) for i in self.working_proxies.keys()]
         heapq.heapify(self.proxies)
 
     @classmethod
     def from_crawler(cls, crawler):
         ext = cls(crawler.settings)
         crawler.signals.connect(ext.spider_idle, signal=signals.spider_idle)
+        crawler.signals.connect(ext.spider_closed, signal=signals.spider_closed)
         return ext
 
     @classmethod
@@ -75,26 +112,14 @@ class HeapProxy(object):
             raise DontCloseSpider()
 
     def add_proxy(self, proxy, request):
-        self.logger.debug('Pushing back to heap')
-        proxy_address = proxy[1]
-        proxy_user_pass = proxy[2]
-
-        if proxy_user_pass:
-            request.meta['proxy'] = proxy_address
-            basic_auth = 'Basic ' + \
-                base64.b64encode(proxy_user_pass.encode()).decode()
-            request.headers['Proxy-Authorization'] = basic_auth
-        else:
-            self.logger.debug(
-                'Proxy user pass not found, adding proxy without password')
-            request.meta['proxy'] = proxy_address
+        request = self.crawlera_req.add_proxy(proxy, request)
         return request
 
     def push_to_heap(self, proxy):
         if proxy[1] not in self.working_proxies.keys():
             return None
         now = datetime.datetime.now()
-        self.working_proxies[proxy[1]] = (proxy[2], now)
+        self.working_proxies[proxy[1]] = now
         try:
             heapq.heappush(self.proxies,
                            (now,
@@ -108,7 +133,7 @@ class HeapProxy(object):
             # Brand New Request
             if len(self.proxies) == 0:
                 # No proxy in queue
-                last_time = min([i[1] for i in self.working_proxies.values()])
+                last_time = min([i for i in self.working_proxies.values()])
 
                 dt = self.timeout - (datetime.datetime.now() -
                                      last_time).total_seconds()
@@ -194,17 +219,24 @@ class HeapProxy(object):
                                                    ConnectionDone,
                                                    TimeoutError,
                                                    ConnectionRefusedError]]):
+            proxy_id = request.headers["X-Crawlera-Session"]
+            self.crawlera_req.delete_and_create(proxy_id)
             proxy = request.meta.pop('proxy')
             request.meta.pop('delayed_request', None)
             request.meta.pop('proxy_object', None)
             request.meta.pop('bad_proxy', None)
             self.working_proxies.pop(proxy, None)
+            self.working_proxies[proxy_id] = datetime.datetime.now()
             try:
                 for i in self.proxies:
                     if i[1] == proxy:
                         self.logger.debug(
                             "Proxy {} not responding, taking off".format(i[1]))
                         self.proxies.remove(i)
+                        now = datetime.datetime.now()
+                        self.proxies.append((now - datetime.timedelta(seconds=self.timeout + 10),
+                            proxy_id,
+                            self.working_proxies[proxy_id]))
                         break
 
                 heapq.heapify(self.proxies)
@@ -213,9 +245,10 @@ class HeapProxy(object):
 
             self.logger.info('Removing failed proxy <%s>, %d proxies left' % (
                 proxy, len(self.working_proxies)))
-            if len(self.working_proxies) < self.restart_limit:
-                self.logger.info("Restarting proxylist")
-                self.build_from_list()
             if 'redirect_urls' in request.meta:
                 request.replace(url=request.meta['redirect_urls'][0])
             return request
+
+
+    def spider_closed(self):
+        self.crawlera_req.delete_all_sessions()
