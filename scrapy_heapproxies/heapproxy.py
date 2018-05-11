@@ -58,7 +58,7 @@ class RequestCrawlera():
     def delete_session(self, id_proxy):
         headers = {"Authorization": basic_auth_header(self.api_key, '')}
         headers["X-Crawlera-Session"] = id_proxy
-        requests.delete("http://proxy.crawlera.com:8010/sessions/" + id_proxy,
+        requests.delete("http://proxy.crawlera.com:8010/sessions/" + str(id_proxy, "utf-8"),
                         headers=headers)
         for i in self.proxies:
             if i == id_proxy:
@@ -112,7 +112,7 @@ class HeapProxy(object):
             raise DontCloseSpider()
 
     def add_proxy(self, proxy, request):
-        request = self.crawlera_req.add_proxy(proxy, request)
+        request = self.crawlera_req.add_proxy(proxy[1], request)
         return request
 
     def push_to_heap(self, proxy):
@@ -219,9 +219,9 @@ class HeapProxy(object):
                                                    ConnectionDone,
                                                    TimeoutError,
                                                    ConnectionRefusedError]]):
+            proxy = request.meta.pop('proxy')
             proxy_id = request.headers["X-Crawlera-Session"]
             self.crawlera_req.delete_and_create(proxy_id)
-            proxy = request.meta.pop('proxy')
             request.meta.pop('delayed_request', None)
             request.meta.pop('proxy_object', None)
             request.meta.pop('bad_proxy', None)
