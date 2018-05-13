@@ -13,6 +13,7 @@ from weakref import WeakKeyDictionary
 from .exceptions import BadProxy
 import requests
 from w3lib.http import basic_auth_header
+import time
 
 class Mode:
     PROXY_TIMEOUT = range(1)
@@ -56,10 +57,15 @@ class RequestCrawlera():
         return (proxy_id)
 
     def delete_session(self, id_proxy):
-        headers = {"Authorization": basic_auth_header(self.api_key, '')}
-        headers["X-Crawlera-Session"] = id_proxy
-        requests.delete("http://proxy.crawlera.com:8010/sessions/" + str(id_proxy, "utf-8"),
-                        headers=headers)
+        if id_proxy != b'':
+            headers = {"Authorization": basic_auth_header(self.api_key, '')}
+            headers["X-Crawlera-Session"] = id_proxy
+            try:
+                requests.delete("http://proxy.crawlera.com:8010/sessions/" + str(id_proxy, "utf-8"),
+                                headers=headers)
+            except TypeError:
+                requests.delete("http://proxy.crawlera.com:8010/sessions/" + id_proxy,
+                                headers=headers)
         for i in self.proxies:
             if i == id_proxy:
                 self.proxies.remove(i)
@@ -138,13 +144,15 @@ class HeapProxy(object):
                 dt = self.timeout - (datetime.datetime.now() -
                                      last_time).total_seconds()
                 dt = max([dt, 0.001])
+                time.sleep(dt)
                 # Somebody is gonna be pushed into queue, must liberate thread
-                request.dont_filter = True
-                reactor.callLater(dt,
+                #request.dont_filter = True
+                '''                reactor.callLater(dt,
                                   self.schedule_request,
                                   request.copy(),
                                   spider)
-                raise IgnoreRequest()
+                '''
+                return request
 
             self.logger.debug('Picking proxies')
             proxy = heapq.heappop(self.proxies)
@@ -195,6 +203,8 @@ class HeapProxy(object):
             return
 
     def schedule_request(self, request, spider, proxy=None):
+        if len(spider.crawler.engine.slot.inprogress) > 300:
+            pdb.set_trace()
         spider.logger.debug('Currently there are {0} scheduled requests and {1} inprogress requests'.
                             format(len(spider.crawler.engine.slot.scheduler),
                                    len(spider.crawler.engine.slot.inprogress)))
