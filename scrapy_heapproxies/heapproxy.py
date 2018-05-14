@@ -26,6 +26,7 @@ class RequestCrawlera():
         self.api_key = api_key
         self.crawlera_url = "http://proxy.crawlera.com:8010"
         self.proxies = []
+        
     def create_session(self, nb):
         headers = {
             "Proxy-Authorization" : basic_auth_header(self.api_key, ''),
@@ -45,6 +46,7 @@ class RequestCrawlera():
         return request
 
     def delete_and_create(self, proxy_id):
+        print("CHANGEMENT OF PROXY FOR : " + str(proxy_id))
         self.delete_session(proxy_id)
         headers = {
             "Proxy-Authorization" : basic_auth_header(self.api_key, ''),
@@ -67,9 +69,14 @@ class RequestCrawlera():
                 requests.delete("http://proxy.crawlera.com:8010/sessions/" + id_proxy,
                                 headers=headers)
         for i in self.proxies:
-            if i == id_proxy:
-                self.proxies.remove(i)
-                break
+            try:
+                if i == str(id_proxy, "utf-8"):
+                    self.proxies.remove(i)
+                    break
+            except TypeError:
+                if i == id_proxy:
+                    self.proxies.remove(i)
+                    break
 
     def delete_all_sessions(self):
         for i in self.proxies:
@@ -144,15 +151,13 @@ class HeapProxy(object):
                 dt = self.timeout - (datetime.datetime.now() -
                                      last_time).total_seconds()
                 dt = max([dt, 0.001])
-                time.sleep(dt)
                 # Somebody is gonna be pushed into queue, must liberate thread
                 #request.dont_filter = True
-                '''                reactor.callLater(dt,
+                reactor.callLater(dt,
                                   self.schedule_request,
                                   request.copy(),
                                   spider)
-                '''
-                return request
+                return None
 
             self.logger.debug('Picking proxies')
             proxy = heapq.heappop(self.proxies)
@@ -180,13 +185,14 @@ class HeapProxy(object):
 
             self.logger.debug('Using proxy <%s>, %d proxies left' % (
                 proxy[1], len(self.proxies)))
+            return request
 
         elif 'bad_proxy' in request.meta:
             # User sent mesage (spider)
             self.logger.debug('Bad proxy detected')
             raise BadProxy
 
-        elif request.meta.get('proxy') not in self.working_proxies.keys():
+        elif str(request.headers["X-Crawlera-Session"], "utf-8") not in self.working_proxies.keys():
             # Request was scheduled with proxy but proxy was since signaled bad_proxy
             raise BadProxy
 
@@ -200,7 +206,7 @@ class HeapProxy(object):
 
             self.logger.debug(
                 'Request has already the needed proxy, nothing to do')
-            return
+            return None
 
     def schedule_request(self, request, spider, proxy=None):
         if len(spider.crawler.engine.slot.inprogress) > 300:
@@ -231,12 +237,12 @@ class HeapProxy(object):
                                                    ConnectionRefusedError]]):
             proxy = request.meta.pop('proxy')
             proxy_id = request.headers["X-Crawlera-Session"]
-            self.crawlera_req.delete_and_create(proxy_id)
+            new_proxy_id = self.crawlera_req.delete_and_create(proxy_id)
             request.meta.pop('delayed_request', None)
             request.meta.pop('proxy_object', None)
             request.meta.pop('bad_proxy', None)
-            self.working_proxies.pop(proxy, None)
-            self.working_proxies[proxy_id] = datetime.datetime.now()
+            self.working_proxies.pop(proxy_id, None)
+            self.working_proxies[new_proxy_id] = datetime.datetime.now()
             try:
                 for i in self.proxies:
                     if i[1] == proxy:
@@ -245,8 +251,8 @@ class HeapProxy(object):
                         self.proxies.remove(i)
                         now = datetime.datetime.now()
                         self.proxies.append((now - datetime.timedelta(seconds=self.timeout + 10),
-                            proxy_id,
-                            self.working_proxies[proxy_id]))
+                            new_proxy_id,
+                            self.working_proxies[new_proxy_id]))
                         break
 
                 heapq.heapify(self.proxies)
