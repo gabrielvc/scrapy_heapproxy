@@ -98,7 +98,7 @@ class HeapProxy(object):
 
         self.proxy_list = []
         self.build_from_list()
-
+        self.id_sch = 0
     def build_from_list(self):
         self.crawlera_req.create_session(10)        
         for i in self.crawlera_req.proxies:
@@ -120,7 +120,7 @@ class HeapProxy(object):
 
     @classmethod
     def spider_idle(cls, spider):
-        if cls.requests.get(spider):
+        if cls.requests.get(spider) is not None:
             spider.log("delayed requests pending, not closing spider")
             raise DontCloseSpider()
 
@@ -142,6 +142,8 @@ class HeapProxy(object):
             pdb.set_trace()
 
     def process_request(self, request, spider):
+        if 'id_sch' in request.meta:
+            print("JE REPROCESS LA REQUETE AVEC ID : " + str(request.meta["id_sch"]))
         if 'proxy' not in request.meta:
             # Brand New Request
             if len(self.proxies) == 0:
@@ -203,12 +205,16 @@ class HeapProxy(object):
                 request.meta.pop('delayed_request')
                 proxy = request.meta.pop('proxy_object')
                 self.push_to_heap(proxy)
+                return request
 
             self.logger.debug(
                 'Request has already the needed proxy, nothing to do')
             return None
 
     def schedule_request(self, request, spider, proxy=None):
+        request.meta["id_sch"] = self.id_sch
+        print("JE PREVOIT LA REQUETE AVEC ID : " + str(request.meta["id_sch"]))        
+        self.id_sch += 1
         if len(spider.crawler.engine.slot.inprogress) > 300:
             pdb.set_trace()
         spider.logger.debug('Currently there are {0} scheduled requests and {1} inprogress requests'.
