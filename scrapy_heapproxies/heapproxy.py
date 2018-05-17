@@ -49,6 +49,8 @@ class HeapProxy(object):
     def spider_idle(cls, spider):
         if cls.requests.get(spider) is not None:
             spider.log("delayed requests pending, not closing spider")
+            spider.log("number of requests to do {0}".format(
+                cls.requests.get(spider)))
             spider.log('Currently there are {0} scheduled requests and {1} inprogress requests'.
                        format(len(spider.crawler.engine.slot.scheduler),
                               len(spider.crawler.engine.slot.inprogress)))
@@ -83,8 +85,7 @@ class HeapProxy(object):
                                      last_time).total_seconds()
                 self.logger.info("recaling id (no proxy) {0} with dt {1}".format(
                     request.meta["id_req"], dt))
-                if dt < 0:
-                    pdb.set_trace()
+
                 dt = max([dt, 0.001])
                 # Somebody is gonna be pushed into queue, must liberate thread
                 # request.dont_filter = True
@@ -92,7 +93,7 @@ class HeapProxy(object):
                                   self.schedule_request,
                                   request.copy(),
                                   spider)
-                raise IgnoreRequest
+                raise IgnoreRequest()
 
             diff = (datetime.datetime.now() -
                     session.last_activity).total_seconds()
