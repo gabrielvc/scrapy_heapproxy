@@ -28,7 +28,7 @@ class CrawleraHeap:
                                         **kwargs) for i in range(size)]
         self.ban_proxies = set()
         heapq.heapify(self.proxies)
-        self.last_activity = None
+        self.last_activity = datetime.datetime.fromtimestamp(0)
 
     def get(self):
         if not len(self):
@@ -94,7 +94,7 @@ class CrawleraSession:
             }
             proxies = {"http": crawlera_url}
             res = requests.get(url, headers=headers,
-                              proxies=proxies)
+                               proxies=proxies)
             id = res.headers["X-Crawlera-Session"]
             self.logger.debug("God gave us {}".format(id))
         self.id = id

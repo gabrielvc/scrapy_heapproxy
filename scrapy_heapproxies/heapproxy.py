@@ -29,14 +29,13 @@ class HeapProxy(object):
         self.timeout = float(settings.get('PROXY_TIMEOUT'))
         self.api_key = str(settings.get("CRAWLERA_APIKEY"))
         self.nbr_proxies = int(settings.get("N_PROXIES"))
-        self.id_req = 0
         self.list_debug = []
         self.logger = logging.getLogger(
             'scrapy.heapproxies')
         self.heap = CrawleraHeap(self.nbr_proxies,
-                                self.api_key,
-                                self.timeout,
-                                logger=self.logger)
+                                 self.api_key,
+                                 self.timeout,
+                                 logger=self.logger)
 
     @classmethod
     def from_crawler(cls, crawler):
@@ -50,6 +49,9 @@ class HeapProxy(object):
     def spider_idle(cls, spider):
         if cls.requests.get(spider) is not None:
             spider.log("delayed requests pending, not closing spider")
+            spider.log('Currently there are {0} scheduled requests and {1} inprogress requests'.
+                       format(len(spider.crawler.engine.slot.scheduler),
+                              len(spider.crawler.engine.slot.inprogress)))
             raise DontCloseSpider()
 
     def add_proxy(self, request, session):
@@ -61,11 +63,11 @@ class HeapProxy(object):
         self.heap.push(session)
 
     def process_request(self, request, spider):
-        if '400' in request.meta:
-            self.logger.error('404 ON REQUEST NB ' + str(request.meta["id_req"]))
-        if 'id_req' not in request.meta:
-            request.meta["id_req"] = self.id_req
-            self.id_req += 1
+        try:
+            self.logger.info(
+                "Currently doing request {}".format(request.meta["id_req"]))
+        except:
+            self.logger.warn("request {} has no id_req".format(request.url))
         self.logger.info("Currently there are {0} available proxies, and {1} banned proxies".format(
             len(self.heap), len(self.heap.ban_proxies)))
         if 'proxy' not in request.meta:
@@ -79,6 +81,10 @@ class HeapProxy(object):
 
                 dt = self.timeout - (datetime.datetime.now() -
                                      last_time).total_seconds()
+                self.logger.info("recaling id (no proxy) {0} with dt {1}".format(
+                    request.meta["id_req"], dt))
+                if dt < 0:
+                    pdb.set_trace()
                 dt = max([dt, 0.001])
                 # Somebody is gonna be pushed into queue, must liberate thread
                 # request.dont_filter = True
@@ -100,6 +106,8 @@ class HeapProxy(object):
                 self.requests[spider] += 1
                 request = self.add_proxy(request, session)
                 request.dont_filter = True
+                self.logger.info("recaling id (no proxy) {0} with dt {1}".format(request.meta["id_req"],
+                                                                                 self.timeout - diff))
                 reactor.callLater(self.timeout - diff,
                                   self.schedule_request,
                                   request.copy(),
@@ -123,7 +131,7 @@ class HeapProxy(object):
             if 'delayed_request' in request.meta:
                 # Delayed request, must just repush to queue
                 self.logger.debug('Dealing with delayed request')
-                #request.meta.pop('delayed_request')
+                # request.meta.pop('delayed_request')
                 session = request.meta['proxy_object']
                 if self.heap.is_ban(session):
                     raise BadProxy
