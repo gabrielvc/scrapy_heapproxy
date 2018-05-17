@@ -1,9 +1,10 @@
-from datetime.datetime import now
+import datetime
 import requests
 from w3lib.http import basic_auth_header
 import heapq
 import logging
 from .exceptions import EmptyHeap
+import pdb
 
 
 class CrawleraHeap:
@@ -26,30 +27,32 @@ class CrawleraHeap:
                                         logger=self.logger,
                                         **kwargs) for i in range(size)]
         self.ban_proxies = set()
-        self.proxies = heapq.heapify(self.proxies)
+        heapq.heapify(self.proxies)
         self.last_activity = None
 
     def get(self):
         if not len(self):
             raise EmptyHeap
 
-        current_session = heapq.pop(self.proxies)
+        current_session = heapq.heappop(self.proxies)
         if self.is_ban(current_session):
             return self.get()
 
-        current_session.status = "active"
         return current_session
 
     def push(self, crawlera_session):
-        self.last_activity = now()
+        self.last_activity = datetime.datetime.now()
         crawlera_session.update()
         if crawlera_session in self.ban_proxies:
             return None
         heapq.heappush(self.proxies, crawlera_session)
 
     def is_ban(self, crawlera_session):
+        return crawlera_session in self.ban_proxies
+
+    def delete_session(self, crawlera_session):
         crawlera_session.delete()
-        self.ban_proxies.append(crawlera_session)
+        self.ban_proxies.add(crawlera_session)
         push_ok = None
         while push_ok is not None:
             push_ok = self.push(CrawleraSession(api_key=self.api_key,
@@ -74,11 +77,12 @@ class CrawleraSession:
                  crawlera_url="http://proxy.crawlera.com:8010",
                  logger=logging.getLogger('CrawleraSession')):
 
+        self.crawlera_url = crawlera_url
         self.api_key = api_key
-        self.ask_god(self, url, crawlera_url)
-        self.last_activity = now()
-        self.status = "available"
         self.logger = logger
+        self.ask_god(url, crawlera_url)
+        self.last_activity = datetime.datetime.now()
+        self.status = "available"
 
     def ask_god(self, url, crawlera_url):
         id = ''
@@ -89,8 +93,9 @@ class CrawleraSession:
                 'X-Crawlera-Session': 'create'
             }
             proxies = {"http": crawlera_url}
-            id = requests.get(url, headers=headers,
-                              proxies=proxies).decode('unicode_escape')
+            res = requests.get(url, headers=headers,
+                              proxies=proxies)
+            id = res.headers["X-Crawlera-Session"]
             self.logger.debug("God gave us {}".format(id))
         self.id = id
 
@@ -109,7 +114,7 @@ class CrawleraSession:
         return request
 
     def update(self):
-        self.last_activity = now()
+        self.last_activity = datetime.datetime.now()
         self.status = "available"
 
     def delete(self):
@@ -118,10 +123,10 @@ class CrawleraSession:
         headers["X-Crawlera-Session"] = self.id
         requests.delete("http://proxy.crawlera.com:8010/sessions/{}".format(self.id),
                         headers=headers)
-        self.last_activity = float('Inf')
+        self.last_activity = datetime.datetime.fromtimestamp(0)
 
     def __hash__(self):
-        return self.id.hash()
+        return self.id.__hash__()
 
     def __eq__(self, other):
         """Overrides the default implementation"""
