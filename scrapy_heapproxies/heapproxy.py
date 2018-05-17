@@ -5,6 +5,7 @@ import datetime
 import time
 import heapq
 import pdb
+import scrapy
 from scrapy import signals
 from scrapy.exceptions import DontCloseSpider, IgnoreRequest
 from twisted.internet import reactor
@@ -26,6 +27,7 @@ class RequestCrawlera():
         self.api_key = api_key
         self.crawlera_url = "http://proxy.crawlera.com:8010"
         self.proxies = []
+        self.deleted_proxy = []
         
     def create_session(self, nb):
         headers = {
@@ -37,7 +39,6 @@ class RequestCrawlera():
         for i in range(0, nb):
             res = requests.get(self.url_init, headers=headers, proxies = proxies)
             self.proxies.append(res.headers.get('X-Crawlera-Session', ''))
-            i += 1
 
     def add_proxy(self, proxy_id, request):
         request.meta['proxy'] = self.crawlera_url
@@ -46,7 +47,6 @@ class RequestCrawlera():
         return request
 
     def delete_and_create(self, proxy_id):
-        print("CHANGEMENT OF PROXY FOR : " + str(proxy_id))
         self.delete_session(proxy_id)
         headers = {
             "Proxy-Authorization" : basic_auth_header(self.api_key, ''),
@@ -60,6 +60,7 @@ class RequestCrawlera():
 
     def delete_session(self, id_proxy):
         if id_proxy != b'':
+            self.deleted_proxy.append(id_proxy)
             headers = {"Authorization": basic_auth_header(self.api_key, '')}
             headers["X-Crawlera-Session"] = id_proxy
             try:
@@ -98,7 +99,8 @@ class HeapProxy(object):
 
         self.proxy_list = []
         self.build_from_list()
-        self.id_sch = 0
+        self.id_req = 0
+        self.schduled_list = []
     def build_from_list(self):
         self.crawlera_req.create_session(10)        
         for i in self.crawlera_req.proxies:
@@ -142,33 +144,49 @@ class HeapProxy(object):
             pdb.set_trace()
 
     def process_request(self, request, spider):
-        if 'id_sch' in request.meta:
-            print("JE REPROCESS LA REQUETE AVEC ID : " + str(request.meta["id_sch"]))
+        if "400" in request.meta:
+            if "proxy" in request.meta:
+                try:
+                    request.meta.pop("id_req")
+                    request.meta.pop("proxy")
+                    request.headers.pop("X-Crawlera-Session")
+                except:
+                    pdb.set_trace()
+        if 'id_req' not in request.meta:
+            request.meta['id_req'] = self.id_req
+            self.id_req += 1
+        self.logger.info("PROCESS REQUEST : " + str(request.meta["id_req"]))
         if 'proxy' not in request.meta:
+            self.logger.info("The request has no proxy")
             # Brand New Request
             if len(self.proxies) == 0:
+                self.logger.info("The proxy list is empty, the request is schedule")
                 # No proxy in queue
                 last_time = min([i for i in self.working_proxies.values()])
-
-                dt = self.timeout - (datetime.datetime.now() -
-                                     last_time).total_seconds()
-                dt = max([dt, 0.001])
+    
+                dt_now = datetime.datetime.now()
+                dt_tmp = self.timeout - (dt_now - last_time).total_seconds()
+                dt = max([dt_tmp, 3])
+                if request.meta["id_req"] in self.schduled_list:
+                    pdb.set_trace()
                 # Somebody is gonna be pushed into queue, must liberate thread
                 #request.dont_filter = True
+
                 reactor.callLater(dt,
                                   self.schedule_request,
                                   request.copy(),
                                   spider)
-                return None
+                raise IgnoreRequest()
 
-            self.logger.debug('Picking proxies')
+            self.logger.info('Get a proxy')
             proxy = heapq.heappop(self.proxies)
             now = datetime.datetime.now()
             diff = (now - proxy[0]).total_seconds()
 
             if diff < self.timeout:
                 # Time out reached for all proxies, calling later
-                self.logger.debug(
+
+                self.logger.info(
                     "Timeout reached, waiting {} seconds".
                     format(self.timeout - diff))
                 self.requests.setdefault(spider, 0)
@@ -185,36 +203,48 @@ class HeapProxy(object):
             request = self.add_proxy(proxy, request)
             self.push_to_heap(proxy)
 
-            self.logger.debug('Using proxy <%s>, %d proxies left' % (
+            self.logger.info('Using proxy <%s>, %d proxies left' % (
                 proxy[1], len(self.proxies)))
-            return request
 
         elif 'bad_proxy' in request.meta:
             # User sent mesage (spider)
-            self.logger.debug('Bad proxy detected')
+            self.logger.warning('Bad proxy detected')
             raise BadProxy
 
         elif str(request.headers["X-Crawlera-Session"], "utf-8") not in self.working_proxies.keys():
             # Request was scheduled with proxy but proxy was since signaled bad_proxy
+            self.logger.warning("Request was scheduled with proxy but proxy was since signaled bad_proxy")
             raise BadProxy
 
         else:
             if 'delayed_request' in request.meta:
                 # Delayed request, must just repush to queue
+                if request.headers["X-Crawlera-Session"] in self.crawlera_req.deleted_proxy:
+                    self.logger.warning("The proxy used has been delete, the request is called later")
+                    request.headers.pop("X-Crawlera-Session", None)
+                    request.meta.pop("proxy")
+                    request.meta.pop('delayed_request')
+                    last_time = min([i for i in self.working_proxies.values()])
+
+                    dt = self.timeout - (datetime.datetime.now() -
+                                        last_time).total_seconds()
+                    dt = max([dt, 0.001])
+                    reactor.callLater(dt,
+                                  self.schedule_request,
+                                  request.copy(),
+                                  spider)
+                    raise IgnoreRequest()                    
                 self.logger.debug('Dealing with delayed request')
                 request.meta.pop('delayed_request')
                 proxy = request.meta.pop('proxy_object')
                 self.push_to_heap(proxy)
-                return request
 
             self.logger.debug(
                 'Request has already the needed proxy, nothing to do')
-            return None
 
     def schedule_request(self, request, spider, proxy=None):
-        request.meta["id_sch"] = self.id_sch
-        print("JE PREVOIT LA REQUETE AVEC ID : " + str(request.meta["id_sch"]))        
-        self.id_sch += 1
+        if request.meta["id_req"] in self.schduled_list:
+            self.logger.info("RESCUDULE THE REQUEST NUM " + str(request.meta["id_req"]))
         if len(spider.crawler.engine.slot.inprogress) > 300:
             pdb.set_trace()
         spider.logger.debug('Currently there are {0} scheduled requests and {1} inprogress requests'.
@@ -225,6 +255,7 @@ class HeapProxy(object):
         if proxy is not None:
             request.meta['delayed_request'] = True
             request.meta['proxy_object'] = proxy
+        self.schduled_list.append(request.meta["id_req"])
         spider.crawler.engine.schedule(request, spider)
 
         spider.logger.debug('Currently there are {0} scheduled requests and {1} inprogress requests'.
