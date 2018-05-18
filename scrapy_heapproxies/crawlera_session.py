@@ -85,8 +85,8 @@ class CrawleraSession:
         self.status = "available"
 
     def ask_god(self, url, crawlera_url):
-        id = ''
-        while not id:
+        self.id = ''
+        while not self.id:
             self.logger.debug("Asking crawlera for a session")
             headers = {
                 "Proxy-Authorization": basic_auth_header(self.api_key, ''),
@@ -95,9 +95,14 @@ class CrawleraSession:
             proxies = {"http": crawlera_url}
             res = requests.get(url, headers=headers,
                                proxies=proxies)
-            id = res.headers["X-Crawlera-Session"]
-            self.logger.debug("God gave us {}".format(id))
-        self.id = id
+            self.id = res.headers.get("X-Crawlera-Session", "")
+            self.logger.debug("God gave us {0} with code {1}".format(self.id,
+                                                                     res.status_code))
+
+            if (res.status_code != 200) and (self.id):
+                self.logger.debug("received bad response")
+                self.delete()
+                self.id = ''
 
     def apply(self, request):
         if all([i in request.meta.keys() for i in ['proxy',

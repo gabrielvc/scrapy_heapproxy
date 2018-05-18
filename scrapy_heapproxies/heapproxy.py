@@ -126,7 +126,7 @@ class HeapProxy(object):
         elif 'bad_proxy' in request.meta:
             # User sent mesage (spider)
             self.logger.debug('Bad proxy detected')
-            raise BadProxy
+            raise BadProxy()
 
         else:
             if 'delayed_request' in request.meta:
@@ -135,7 +135,7 @@ class HeapProxy(object):
                 # request.meta.pop('delayed_request')
                 session = request.meta['proxy_object']
                 if self.heap.is_ban(session):
-                    raise BadProxy
+                    raise BadProxy()
                 self.push_to_heap(session)
 
             self.logger.debug(
