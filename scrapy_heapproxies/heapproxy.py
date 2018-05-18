@@ -48,6 +48,8 @@ class HeapProxy(object):
     @classmethod
     def spider_idle(cls, spider):
         if cls.requests.get(spider) is not None:
+            if cls.requests.get(spider) == 0:
+                return
             spider.log("delayed requests pending, not closing spider")
             spider.log("number of requests to do {0}".format(
                 cls.requests.get(spider)))
@@ -86,9 +88,11 @@ class HeapProxy(object):
                 self.logger.info("recaling id (no proxy) {0} with dt {1}".format(
                     request.meta["id_req"], dt))
 
-                dt = max([dt, 0.001])
+                dt = max([dt, 3])
                 # Somebody is gonna be pushed into queue, must liberate thread
                 # request.dont_filter = True
+                self.requests.setdefault(spider, 0)
+                self.requests[spider] += 1
                 reactor.callLater(dt,
                                   self.schedule_request,
                                   request.copy(),
@@ -123,27 +127,27 @@ class HeapProxy(object):
                 session.id, len(self.heap)))
             return None
 
-        elif 'bad_proxy' in request.meta:
-            # User sent mesage (spider)
-            self.logger.debug('Bad proxy detected')
-            raise BadProxy()
-
         else:
             if 'delayed_request' in request.meta:
                 # Delayed request, must just repush to queue
                 self.logger.debug('Dealing with delayed request')
                 # request.meta.pop('delayed_request')
-                session = request.meta['proxy_object']
-                if self.heap.is_ban(session):
-                    raise BadProxy()
-                self.push_to_heap(session)
 
             self.logger.debug(
                 'Request has already the needed proxy, nothing to do')
             return None
 
+    def process_response(self, request, response, spider):
+        raise BadProxy()
+        session = request.meta['proxy_object']
+        if self.heap.is_ban(session):
+            raise BadProxy()
+        self.push_to_heap(session)
+        return response
+
+
     def schedule_request(self, request, spider, session=None):
-        if len(spider.crawler.engine.slot.inprogress) > 300:
+        if len(spider.crawler.engine.slot.inprogress) > 100:
             pdb.set_trace()
         spider.logger.debug('Currently there are {0} scheduled requests and {1} inprogress requests'.
                             format(len(spider.crawler.engine.slot.scheduler),
@@ -179,7 +183,6 @@ class HeapProxy(object):
             self.heap.delete_session(session)
 
             request.meta.pop('delayed_request', None)
-            request.meta.pop('bad_proxy', None)
             self.logger.info('Removing failed proxy {0}, {1} proxies left and {2} banned'.format(
                 session.id, len(self.heap), len(self.heap.ban_proxies)))
             if "redirect_urls" in request.meta:
