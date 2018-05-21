@@ -121,7 +121,6 @@ class HeapProxy(object):
                 raise IgnoreRequest()
 
             request = self.add_proxy(request, session)
-            self.push_to_heap(session)
 
             self.logger.debug('Using proxy <%s>, %d proxies left' % (
                 session.id, len(self.heap)))
@@ -132,19 +131,27 @@ class HeapProxy(object):
                 # Delayed request, must just repush to queue
                 self.logger.debug('Dealing with delayed request')
                 # request.meta.pop('delayed_request')
+                return
 
             self.logger.debug(
                 'Request has already the needed proxy, nothing to do')
             return None
 
-    def process_response(self, request, response, spider):
-        raise BadProxy()
+    def is_response_banned(self, response, request):
         session = request.meta['proxy_object']
-        if self.heap.is_ban(session):
-            raise BadProxy()
+        return self.heap.is_ban(session)
+
+    def process_response(self,
+                         request,
+                         response,
+                         spider):
+        is_ban = self.is_response_banned(response, request)
+        if is_ban:
+            self.logger.info("Request has been banned")
+            return self.process_exception(request, BadProxy(), spider)
+        session = request.meta['proxy_object']
         self.push_to_heap(session)
         return response
-
 
     def schedule_request(self, request, spider, session=None):
         if len(spider.crawler.engine.slot.inprogress) > 100:

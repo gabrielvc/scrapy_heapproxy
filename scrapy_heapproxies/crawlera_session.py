@@ -26,6 +26,8 @@ class CrawleraHeap:
                                         crawlera_url=self.crawlera_url,
                                         logger=self.logger,
                                         **kwargs) for i in range(size)]
+        self.size = size
+        self.active_proxies = set(self.proxies)
         self.ban_proxies = set()
         heapq.heapify(self.proxies)
         self.last_activity = datetime.datetime.fromtimestamp(0)
@@ -43,21 +45,39 @@ class CrawleraHeap:
     def push(self, crawlera_session):
         self.last_activity = datetime.datetime.now()
         crawlera_session.update()
-        if crawlera_session in self.ban_proxies:
-            return None
+        if (crawlera_session in self.ban_proxies):
+            return False
         heapq.heappush(self.proxies, crawlera_session)
+        return True
 
     def is_ban(self, crawlera_session):
         return crawlera_session in self.ban_proxies
 
     def delete_session(self, crawlera_session):
+        self.logger.debug("Removing proxy from known active sessions")
+        self.active_proxies.discard(crawlera_session)
+        self.logger.debug("Removing session")
         crawlera_session.delete()
+
+        self.logger.debug("Adding proxy to banned sessions")
         self.ban_proxies.add(crawlera_session)
-        push_ok = None
-        while push_ok is not None:
-            push_ok = self.push(CrawleraSession(api_key=self.api_key,
-                                                url=self.url,
-                                                crawlera_url=self.crawlera_url))
+        push_ok = (len(self.active_proxies) > self.size)
+        while not push_ok:
+            self.logger.debug("Gettint new session")
+            crawlera_session = CrawleraSession(api_key=self.api_key,
+                                               url=self.url,
+                                               crawlera_url=self.crawlera_url)
+            self.logger.debug("Testing if it already exists")
+            if crawlera_session in self.active_proxies:
+                self.logger.debug("Already on active proxies")
+            else:
+                push_ok = self.push(crawlera_session)
+                if not push_ok:
+                    crawlera_session.delete()
+
+        self.logger.debug("Adding to active sessions")
+        self.active_proxies.add(crawlera_session)
+        return True
 
     def destroy(self):
         self.logger.info(
@@ -123,7 +143,7 @@ class CrawleraSession:
         self.status = "available"
 
     def delete(self):
-        self.logger.debug("Deleting proxy {}".format(self.api_key))
+        self.logger.debug("Deleting proxy {}".format(self.id))
         headers = {"Authorization": basic_auth_header(self.api_key, '')}
         headers["X-Crawlera-Session"] = self.id
         requests.delete("http://proxy.crawlera.com:8010/sessions/{}".format(self.id),
