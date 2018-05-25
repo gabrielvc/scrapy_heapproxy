@@ -27,7 +27,7 @@ class CrawleraHeap:
                                         logger=self.logger,
                                         **kwargs) for i in range(size)]
         self.size = size
-        self.active_proxies = set(self.proxies)
+        self.active_proxies = set()
         self.ban_proxies = set()
         heapq.heapify(self.proxies)
         self.last_activity = datetime.datetime.fromtimestamp(0)
@@ -61,22 +61,11 @@ class CrawleraHeap:
 
         self.logger.debug("Adding proxy to banned sessions")
         self.ban_proxies.add(crawlera_session)
-        push_ok = (len(self.active_proxies) > self.size)
-        while not push_ok:
-            self.logger.debug("Gettint new session")
-            crawlera_session = CrawleraSession(api_key=self.api_key,
-                                               url=self.url,
-                                               crawlera_url=self.crawlera_url)
-            self.logger.debug("Testing if it already exists")
-            if crawlera_session in self.active_proxies:
-                self.logger.debug("Already on active proxies")
-            else:
-                push_ok = self.push(crawlera_session)
-                if not push_ok:
-                    crawlera_session.delete()
-
+        crawlera_session = CrawleraSession(api_key=self.api_key,
+                                           url=self.url,
+                                           crawlera_url=self.crawlera_url)
+        self.push(crawlera_session)
         self.logger.debug("Adding to active sessions")
-        self.active_proxies.add(crawlera_session)
         return True
 
     def destroy(self):
@@ -100,29 +89,9 @@ class CrawleraSession:
         self.crawlera_url = crawlera_url
         self.api_key = api_key
         self.logger = logger
-        self.ask_god(url, crawlera_url)
         self.last_activity = datetime.datetime.now()
         self.status = "available"
-
-    def ask_god(self, url, crawlera_url):
         self.id = ''
-        while not self.id:
-            self.logger.debug("Asking crawlera for a session")
-            headers = {
-                "Proxy-Authorization": basic_auth_header(self.api_key, ''),
-                'X-Crawlera-Session': 'create'
-            }
-            proxies = {"http": crawlera_url}
-            res = requests.get(url, headers=headers,
-                               proxies=proxies)
-            self.id = res.headers.get("X-Crawlera-Session", "")
-            self.logger.debug("God gave us {0} with code {1}".format(self.id,
-                                                                     res.status_code))
-
-            if (res.status_code != 200) and (self.id):
-                self.logger.debug("received bad response")
-                self.delete()
-                self.id = ''
 
     def apply(self, request):
         if all([i in request.meta.keys() for i in ['proxy',
@@ -135,7 +104,10 @@ class CrawleraSession:
         request.meta['proxy'] = self.crawlera_url
         request.headers['Proxy-Authorization'] = basic_auth_header(
             self.api_key, '')
-        request.headers["X-Crawlera-Session"] = self.id
+        if not self.id:
+            request.headers["X-Crawlera-Session"] = "create"
+        else:
+            request.headers["X-Crawlera-Session"] = self.id
         return request
 
     def update(self):
@@ -149,6 +121,9 @@ class CrawleraSession:
         requests.delete("http://proxy.crawlera.com:8010/sessions/{}".format(self.id),
                         headers=headers)
         self.last_activity = datetime.datetime.fromtimestamp(0)
+
+    def set_id(id):
+        self.id = id
 
     def __hash__(self):
         return self.id.__hash__()

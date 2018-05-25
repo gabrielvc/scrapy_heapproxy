@@ -72,7 +72,7 @@ class HeapProxy(object):
                 "Currently doing request {}".format(request.meta["id_req"]))
         except:
             self.logger.warn("request {} has no id_req".format(request.url))
-        self.logger.info("Currently there are {0} available proxies, and {1} banned proxies".format(
+        self.logger.debug("Currently there are {0} available proxies, and {1} banned proxies".format(
             len(self.heap), len(self.heap.ban_proxies)))
         if 'proxy' not in request.meta:
             # Brand New Request
@@ -85,12 +85,12 @@ class HeapProxy(object):
 
                 dt = self.timeout - (datetime.datetime.now() -
                                      last_time).total_seconds()
-                self.logger.info("recaling id (no proxy) {0} with dt {1}".format(
+                self.logger.debug("recaling id (no proxy) {0} with dt {1}".format(
                     request.meta["id_req"], dt))
-
                 dt = max([dt, 3])
                 # Somebody is gonna be pushed into queue, must liberate thread
                 # request.dont_filter = True
+                self.logger.debug("REQUEST NUMBER {} ADD TOO REQUEST (1)".format(str(request.meta["id_req"])))
                 self.requests.setdefault(spider, 0)
                 self.requests[spider] += 1
                 reactor.callLater(dt,
@@ -107,6 +107,7 @@ class HeapProxy(object):
                 self.logger.debug(
                     "Timeout reached, waiting {} seconds".
                     format(self.timeout - diff))
+                self.logger.debug("REQUEST NUMBER {} ADD TOO REQUEST (2)".format(str(request.meta["id_req"])))
                 self.requests.setdefault(spider, 0)
                 self.requests[spider] += 1
                 request = self.add_proxy(request, session)
@@ -145,17 +146,20 @@ class HeapProxy(object):
                          request,
                          response,
                          spider):
+        session = request.meta['proxy_object']
+        if not session.id:
+            session.set_id(response.headers["X-Crawlera-Session"])
         is_ban = self.is_response_banned(response, request)
         if is_ban:
+            request.meta['proxy_object'] = session
+            request.headers["X-Crawlera-Session"] = session.id            
             self.logger.info("Request has been banned")
             return self.process_exception(request, BadProxy(), spider)
-        session = request.meta['proxy_object']
+        self.heap.active_proxies.add(session)
         self.push_to_heap(session)
         return response
 
     def schedule_request(self, request, spider, session=None):
-        if len(spider.crawler.engine.slot.inprogress) > 100:
-            pdb.set_trace()
         spider.logger.debug('Currently there are {0} scheduled requests and {1} inprogress requests'.
                             format(len(spider.crawler.engine.slot.scheduler),
                                    len(spider.crawler.engine.slot.inprogress)))
