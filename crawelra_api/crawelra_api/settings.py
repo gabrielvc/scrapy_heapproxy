@@ -8,12 +8,12 @@
 #     https://doc.scrapy.org/en/latest/topics/settings.html
 #     https://doc.scrapy.org/en/latest/topics/downloader-middleware.html
 #     https://doc.scrapy.org/en/latest/topics/spider-middleware.html
+from authentification import *
 
 BOT_NAME = 'crawelra_api'
 
 SPIDER_MODULES = ['crawelra_api.spiders']
 NEWSPIDER_MODULE = 'crawelra_api.spiders'
-CRAWLERA_APIKEY = '397c088c60a04cdc84624c4363e0d496'
 
 # Crawl responsibly by identifying yourself (and your website) on the user-agent
 #USER_AGENT = 'crawelra_api (+http://www.yourdomain.com)'
