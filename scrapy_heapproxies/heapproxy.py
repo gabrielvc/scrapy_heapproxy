@@ -5,6 +5,7 @@ import datetime
 import time
 import heapq
 import pdb
+import scrapy
 from scrapy import signals
 from scrapy.exceptions import DontCloseSpider, IgnoreRequest
 from twisted.internet import reactor
@@ -19,7 +20,6 @@ import time
 
 class Mode:
     PROXY_TIMEOUT = range(1)
-
 
 class HeapProxy(object):
     requests = WeakKeyDictionary()
@@ -36,7 +36,6 @@ class HeapProxy(object):
                                  self.api_key,
                                  self.timeout,
                                  logger=self.logger)
-
     @classmethod
     def from_crawler(cls, crawler):
         ext = cls(crawler.settings)
@@ -75,6 +74,7 @@ class HeapProxy(object):
         self.logger.debug("Currently there are {0} available proxies, and {1} banned proxies".format(
             len(self.heap), len(self.heap.ban_proxies)))
         if 'proxy' not in request.meta:
+            self.logger.info("The request has no proxy")
             # Brand New Request
             self.logger.debug('Picking proxies')
             try:
@@ -102,9 +102,11 @@ class HeapProxy(object):
             diff = (datetime.datetime.now() -
                     session.last_activity).total_seconds()
 
+
             if diff < self.timeout:
                 # Time out reached for all proxies, calling later
-                self.logger.debug(
+
+                self.logger.info(
                     "Timeout reached, waiting {} seconds".
                     format(self.timeout - diff))
                 self.logger.debug("REQUEST NUMBER {} ADD TOO REQUEST (2)".format(str(request.meta["id_req"])))
@@ -130,13 +132,27 @@ class HeapProxy(object):
         else:
             if 'delayed_request' in request.meta:
                 # Delayed request, must just repush to queue
+                if request.headers["X-Crawlera-Session"] in self.crawlera_req.deleted_proxy:
+                    self.logger.warning("The proxy used has been delete, the request is called later")
+                    request.headers.pop("X-Crawlera-Session", None)
+                    request.meta.pop("proxy")
+                    request.meta.pop('delayed_request')
+                    last_time = min([i for i in self.working_proxies.values()])
+
+                    dt = self.timeout - (datetime.datetime.now() -
+                                        last_time).total_seconds()
+                    dt = max([dt, 0.001])
+                    reactor.callLater(dt,
+                                  self.schedule_request,
+                                  request.copy(),
+                                  spider)
+                    raise IgnoreRequest()                    
                 self.logger.debug('Dealing with delayed request')
                 # request.meta.pop('delayed_request')
                 return
 
             self.logger.debug(
                 'Request has already the needed proxy, nothing to do')
-            return None
 
     def is_response_banned(self, response, request):
         session = request.meta['proxy_object']
